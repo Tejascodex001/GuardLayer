@@ -40,7 +40,7 @@ User Input
                          │ (if not blocked)
                          ▼
                ┌──────────────────┐
-               │  LLM             │  Ollama + TinyLlama (or mock fallback)
+               │  LLM             │  Ollama + tinyllama/qwen2.5 coder (or mock fallback)
                └────────┬─────────┘
                          │
                          ▼
@@ -129,7 +129,7 @@ User Input
 
 | Mode | When | How |
 |------|------|-----|
-| **Ollama (real LLM)** | Ollama is running locally | `POST /api/generate` to `localhost:11434` with TinyLlama (1.1B params) |
+| **Ollama (real LLM)** | Ollama is running locally | `POST /api/generate` to `localhost:11434` with tinyllama/qwen2.5 coder (1.1B params) |
 | **Mock fallback** | Ollama not available | Rule-based simulator. Includes adversarial responses to demo output guards. |
 
 The mock LLM deliberately returns harmful responses for certain trigger words (bomb, malware, SSN queries) so the output guards can be demonstrated without a live model.
@@ -147,7 +147,7 @@ python -m spacy download en_core_web_sm
 ### (Optional) Real LLM with Ollama
 ```bash
 # Install Ollama from https://ollama.ai
-ollama pull tinyllama
+ollama pull tinyllama/qwen2.5 coder
 ollama serve
 ```
 
@@ -244,8 +244,8 @@ Keyword lists fail against novel phrasings. `all-MiniLM-L6-v2` encodes semantic 
 **Why DistilBERT for toxicity?**  
 It's the same model class used by Google Perspective API, trained on 160K labeled examples from real content moderation. A keyword list cannot generalize to novel harmful content. DistilBERT can.
 
-**Why Ollama + TinyLlama?**  
-Demonstrates that GuardLayer is LLM-agnostic and wraps a real generative model — not a hardcoded simulator. TinyLlama runs on any modern CPU with 4GB RAM.
+**Why Ollama + tinyllama/qwen2.5 coder?**  
+Demonstrates that GuardLayer is LLM-agnostic and wraps a real generative model — not a hardcoded simulator. tinyllama/qwen2.5 coder runs on any modern CPU with 4GB RAM.
 
 **Why Microsoft Presidio-style regex + NER for PII?**  
 Regex catches structured PII (SSN, credit cards, emails). NER catches unstructured PII (names, organizations, locations). Neither alone is sufficient.
