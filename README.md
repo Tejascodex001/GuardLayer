@@ -147,7 +147,7 @@ python -m spacy download en_core_web_sm
 ### (Optional) Real LLM with Ollama
 ```bash
 # Install Ollama from https://ollama.ai
-ollama pull tinyllama/qwen2.5 coder
+ollama pull tinyllama
 ollama serve
 ```
 
