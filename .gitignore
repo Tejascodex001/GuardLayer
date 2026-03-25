@@ -22,5 +22,5 @@ env/
 build/
 dist/
 .git/
-
+LOGFIX.md
 

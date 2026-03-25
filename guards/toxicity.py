@@ -4,12 +4,12 @@ Guard 3 — Output Toxicity Filter
 Detection strategy (two-tier):
 
 TIER 1 — ML Classifier (production-grade):
-  Uses martin-ha/toxic-comment-classifier, a DistilBERT model fine-tuned on
+  Uses martin-ha/toxic-comment-model, a DistilBERT model fine-tuned on
   the Jigsaw Toxic Comment Classification dataset (160K labeled examples).
   Returns probability scores for: toxic, severe_toxic, obscene, threat,
   insult, identity_hate categories.
 
-  Model card: https://huggingface.co/martin-ha/toxic-comment-classifier
+  Model card: https://huggingface.co/martin-ha/toxic-comment-model
   Size: ~67MB, runs on CPU in ~50ms per inference.
 
   This is the same class of model used by Google's Perspective API in
@@ -123,7 +123,7 @@ def filter_toxicity(text: str) -> GuardResult:
                 return GuardResult(
                     triggered=True,
                     risk_score=round(ml_score, 3),
-                    reason=f"ML classifier: {label} (confidence {ml_score:.3f}) — martin-ha/toxic-comment-classifier",
+                    reason=f"ML classifier: {label} (confidence {ml_score:.3f}) — martin-ha/toxic-comment-model",
                     action="block",
                     clean_text=FALLBACK_RESPONSE,
                     detection_method="ml_classifier (DistilBERT)"

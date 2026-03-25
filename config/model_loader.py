@@ -5,7 +5,7 @@ All models run locally — no API keys required.
 
 Models used:
 - sentence-transformers/all-MiniLM-L6-v2  (80MB) — semantic similarity for injection/jailbreak
-- martin-ha/toxic-comment-classifier       (67MB) — DistilBERT toxicity classifier
+- martin-ha/toxic-comment-model       (67MB) — DistilBERT toxicity classifier
 - spacy en_core_web_sm                     (12MB) — NER for PII detection
 
 Install:
@@ -69,10 +69,10 @@ def _load_toxicity_classifier():
     global _toxicity_pipeline
     try:
         from transformers import pipeline as hf_pipeline
-        logger.info("Loading martin-ha/toxic-comment-classifier ...")
+        logger.info("Loading martin-ha/toxic-comment-model ...")
         _toxicity_pipeline = hf_pipeline(
             "text-classification",
-            model="martin-ha/toxic-comment-classifier",
+            model="martin-ha/toxic-comment-model",
             truncation=True,
             max_length=512,
         )

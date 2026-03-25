@@ -7,7 +7,7 @@ Pipeline:
   User Input
     → Guard 1: Prompt Injection (semantic similarity + heuristic)
     → Guard 2: Jailbreak Resistance (semantic similarity + taxonomy)
-    → LLM (Ollama/TinyLlama or mock fallback)
+    → LLM (Ollama / OpenAI / Anthropic / mock fallback)
     → Guard 3: Toxicity Filter (DistilBERT classifier or keyword tiers)
     → Guard 4: PII Redactor (spaCy NER + regex)
     → Safe Response
@@ -33,7 +33,7 @@ from guards.prompt_injection import detect_prompt_injection
 from guards.jailbreak import detect_jailbreak
 from guards.toxicity import filter_toxicity
 from guards.pii_redactor import redact_pii
-from llm.connector import generate_response
+from llm.connector import generate_response, get_active_llm
 
 logging.basicConfig(
     level=logging.INFO,
@@ -41,13 +41,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger("guardlayer")
 
-# ── In-memory store (replace with Redis/DB in full production) ──
 request_logs: List[Dict[str, Any]] = []
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Load ML models on startup."""
     logger.info("GuardLayer starting up — loading ML models...")
     load_all_models()
     logger.info(f"Model status: {MODELS_READY}")
@@ -60,8 +58,7 @@ app = FastAPI(
     description=(
         "Production-grade LLM Guardrails Framework. "
         "4-layer defense: Prompt Injection | Jailbreak | Toxicity | PII. "
-        "Two-tier detection: ML models (sentence-transformers, DistilBERT, spaCy) "
-        "with heuristic fallback."
+        "Two-tier detection: ML models with heuristic fallback."
     ),
     version="2.0.0",
     lifespan=lifespan,
@@ -106,6 +103,32 @@ class ChatResponse(BaseModel):
     timestamp: str
 
 
+# ── Helpers ──────────────────────────────────────────────────
+
+def _serialize_guards(guards):
+    return [g.model_dump() if hasattr(g, "model_dump") else g.__dict__ for g in guards]
+
+
+def _log(request_id, user_input, output, blocked, guards, timestamp, stage, llm_source):
+    request_logs.append({
+        "request_id": request_id, "input": user_input, "output": output,
+        "blocked": blocked, "pipeline_stage": stage,
+        "guards": _serialize_guards(guards),
+        "llm_source": llm_source, "timestamp": timestamp
+    })
+    if len(request_logs) > 200:
+        request_logs.pop(0)
+
+
+def _respond(request_id, user_input, output, blocked, stage, guards, llm_source, timestamp):
+    _log(request_id, user_input, output, blocked, guards, timestamp, stage, llm_source)
+    return ChatResponse(
+        request_id=request_id, input=user_input, output=output,
+        blocked=blocked, pipeline_stage=stage,
+        guards=guards, llm_source=llm_source, timestamp=timestamp
+    )
+
+
 # ── Endpoints ────────────────────────────────────────────────
 
 @app.get("/", response_class=HTMLResponse)
@@ -123,8 +146,6 @@ async def chat(req: ChatRequest):
     pipeline_stage = "clean"
     llm_source = "n/a"
 
-    # ── INPUT GUARDS ─────────────────────────────────────────
-
     # Guard 1: Prompt Injection
     inj = detect_prompt_injection(user_input)
     guards_log.append(GuardDetail(
@@ -134,12 +155,9 @@ async def chat(req: ChatRequest):
         detection_method=inj.detection_method
     ))
     if inj.action == "block":
-        output = (
-            "⚠ Request blocked: Prompt injection attempt detected. "
-            f"Risk score: {inj.risk_score:.3f}. Please rephrase your message."
-        )
-        return _build_response(request_id, user_input, output, True,
-                               "input_blocked", guards_log, "n/a", timestamp)
+        return _respond(request_id, user_input,
+            f"⚠ Request blocked: Prompt injection detected. Risk: {inj.risk_score:.3f}.",
+            True, "input_blocked", guards_log, "n/a", timestamp)
 
     # Guard 2: Jailbreak
     jb = detect_jailbreak(user_input)
@@ -150,17 +168,12 @@ async def chat(req: ChatRequest):
         detection_method=jb.detection_method
     ))
     if jb.action == "block":
-        output = (
-            "⚠ Request blocked: Jailbreak attempt detected. "
-            f"Risk score: {jb.risk_score:.3f}. This behavior is not permitted."
-        )
-        return _build_response(request_id, user_input, output, True,
-                               "input_blocked", guards_log, "n/a", timestamp)
+        return _respond(request_id, user_input,
+            f"⚠ Request blocked: Jailbreak attempt detected. Risk: {jb.risk_score:.3f}.",
+            True, "input_blocked", guards_log, "n/a", timestamp)
 
-    # ── LLM CALL ─────────────────────────────────────────────
+    # LLM call
     raw_output, llm_source = generate_response(user_input)
-
-    # ── OUTPUT GUARDS ─────────────────────────────────────────
 
     # Guard 3: Toxicity
     tox = filter_toxicity(raw_output)
@@ -174,9 +187,8 @@ async def chat(req: ChatRequest):
     if tox.triggered:
         pipeline_stage = "output_modified"
     if tox.action == "block":
-        _log(request_id, user_input, post_tox, True, guards_log, timestamp, "output_blocked", llm_source)
-        return _build_response(request_id, user_input, post_tox, True,
-                               "output_blocked", guards_log, llm_source, timestamp)
+        return _respond(request_id, user_input, post_tox,
+                        True, "output_blocked", guards_log, llm_source, timestamp)
 
     # Guard 4: PII
     pii = redact_pii(post_tox)
@@ -187,35 +199,11 @@ async def chat(req: ChatRequest):
         detection_method=pii.detection_method,
         pii_types=list(set(e.entity_type for e in pii.pii_found)) if pii.pii_found else []
     ))
-    final_output = pii.clean_text
     if pii.triggered:
         pipeline_stage = "output_modified"
 
-    _log(request_id, user_input, final_output, False, guards_log, timestamp, pipeline_stage, llm_source)
-    return _build_response(request_id, user_input, final_output, False,
-                           pipeline_stage, guards_log, llm_source, timestamp)
-
-
-def _build_response(request_id, user_input, output, blocked,
-                    stage, guards, llm_source, timestamp):
-    _log(request_id, user_input, output, blocked, guards, timestamp, stage, llm_source)
-    return ChatResponse(
-        request_id=request_id, input=user_input, output=output,
-        blocked=blocked, pipeline_stage=stage,
-        guards=guards, llm_source=llm_source, timestamp=timestamp
-    )
-
-
-def _log(request_id, user_input, output, blocked, guards, timestamp, stage, llm_source):
-    entry = {
-        "request_id": request_id, "input": user_input, "output": output,
-        "blocked": blocked, "pipeline_stage": stage,
-        "guards": [g.model_dump() if hasattr(g, 'model_dump') else g.__dict__ for g in guards],
-        "llm_source": llm_source, "timestamp": timestamp
-    }
-    request_logs.append(entry)
-    if len(request_logs) > 200:
-        request_logs.pop(0)
+    return _respond(request_id, user_input, pii.clean_text,
+                    False, pipeline_stage, guards_log, llm_source, timestamp)
 
 
 @app.get("/logs")
@@ -236,10 +224,10 @@ async def health():
 
 @app.get("/stats")
 async def stats():
-    total   = len(request_logs)
-    blocked = sum(1 for l in request_logs if l["blocked"])
+    total    = len(request_logs)
+    blocked  = sum(1 for l in request_logs if l["blocked"])
     modified = sum(1 for l in request_logs if l["pipeline_stage"] == "output_modified")
-    clean   = sum(1 for l in request_logs if l["pipeline_stage"] == "clean")
+    clean    = sum(1 for l in request_logs if l["pipeline_stage"] == "clean")
     return {
         "total_requests": total,
         "blocked_requests": blocked,
@@ -251,7 +239,6 @@ async def stats():
 
 @app.get("/models")
 async def model_status():
-    """Returns current ML model availability for dashboard."""
     return {
         "semantic_similarity": {
             "active": MODELS_READY["semantic_similarity"],
@@ -261,7 +248,7 @@ async def model_status():
         },
         "toxicity_classifier": {
             "active": MODELS_READY["toxicity_classifier"],
-            "model": "martin-ha/toxic-comment-classifier (DistilBERT)",
+            "model": "martin-ha/toxic-comment-model (DistilBERT)",
             "used_by": ["Toxicity Filter"],
             "install": "pip install transformers torch"
         },
@@ -274,5 +261,26 @@ async def model_status():
     }
 
 
+@app.get("/llm-status")
+async def llm_status():
+    from llm.connector import (
+        OPENAI_API_KEY, ANTHROPIC_API_KEY,
+        OPENAI_MODEL, ANTHROPIC_MODEL, OLLAMA_MODEL, _check_ollama
+    )
+    return {
+        "active": get_active_llm(),
+        "options": {
+            "openai":    {"configured": bool(OPENAI_API_KEY),    "model": OPENAI_MODEL,    "env": "OPENAI_API_KEY"},
+            "anthropic": {"configured": bool(ANTHROPIC_API_KEY), "model": ANTHROPIC_MODEL, "env": "ANTHROPIC_API_KEY"},
+            "ollama":    {"available": _check_ollama(),          "model": OLLAMA_MODEL,    "url": "http://localhost:11434"},
+            "mock":      {"available": True,                     "note": "Always active as final fallback"},
+        },
+        "priority": ["openai", "anthropic", "ollama", "mock"]
+    }
+
+
+# ── Entry point ──────────────────────────────────────────────
+# NOTE: ALL endpoints must be defined BEFORE this line.
+# uvicorn.run() blocks — anything after it never executes.
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)

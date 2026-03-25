@@ -461,6 +461,10 @@ tr:hover td { background: var(--bg); }
           <span class="model-name">spaCy NER</span>
           <span class="model-status" id="ms-spacy">—</span>
         </div>
+        <div class="model-row" id="llmModelRow">
+          <span class="model-name">LLM: —</span>
+          <span class="model-status ms-fallback">—</span>
+        </div>
       </div>
 
       <div class="empty-state" id="guardsEmpty">
@@ -500,20 +504,45 @@ function switchTab(el, paneId) {
   if (paneId === 'pane-logs') refreshLogs();
 }
 
-// ── Model status (loaded once) ───────────────────
+// ── Model + LLM status ──────────────────────────
+function updateLlmBadge(source) {
+  const badge = document.getElementById('llmBadge');
+  if (!badge || !source) return;
+  const isMock = source === 'mock';
+  const isOllama = source.startsWith('ollama');
+  const icon = isMock ? '⚪' : isOllama ? '🟡' : '🟢';
+  badge.textContent = 'LLM: ' + icon + ' ' + source;
+}
+
 async function loadModelStatus() {
+  // Fetch model status — independent try/catch so one failure doesn't break the other
   try {
-    const data = await (await fetch(API + '/models')).json();
+    const modelData = await fetch(API + '/models').then(r => r.json());
     document.getElementById('modelPanel').style.display = 'flex';
-    const set = (id, active) => {
+    const setModel = (id, active) => {
       const el = document.getElementById(id);
+      if (!el) return;
       el.textContent = active ? 'ML Active' : 'Heuristic';
       el.className   = 'model-status ' + (active ? 'ms-active' : 'ms-fallback');
     };
-    set('ms-semantic', data.semantic_similarity.active);
-    set('ms-toxicity', data.toxicity_classifier.active);
-    set('ms-spacy',    data.spacy_ner.active);
-  } catch(e) {}
+    setModel('ms-semantic', modelData.semantic_similarity.active);
+    setModel('ms-toxicity', modelData.toxicity_classifier.active);
+    setModel('ms-spacy',    modelData.spacy_ner.active);
+  } catch(e) { console.warn('Could not load model status:', e); }
+
+  // Fetch LLM status separately
+  try {
+    const llmData = await fetch(API + '/llm-status').then(r => r.json());
+    updateLlmBadge(llmData.active);
+    const llmRow = document.getElementById('llmModelRow');
+    if (llmRow) {
+      const isMock = llmData.active === 'mock';
+      llmRow.querySelector('.model-name').textContent = 'LLM: ' + llmData.active;
+      const s = llmRow.querySelector('.model-status');
+      s.textContent = isMock ? 'Mock' : 'Live';
+      s.className   = 'model-status ' + (isMock ? 'ms-fallback' : 'ms-active');
+    }
+  } catch(e) { console.warn('Could not load LLM status:', e); }
 }
 loadModelStatus();
 
@@ -755,9 +784,8 @@ async function sendMessage() {
 
     // Update LLM badge
     if (data.llm_source) {
-      const badge = document.getElementById('llmBadge');
-      badge.textContent = `LLM: ${data.llm_source === 'ollama' ? '🟢 Ollama' : '⚪ Mock'}`;
-    }
+    // Update LLM badge
+    if (data.llm_source) updateLlmBadge(data.llm_source);
 
     // Stats
     stats.total++;
@@ -766,8 +794,9 @@ async function sendMessage() {
     document.getElementById('sTotal').textContent   = stats.total;
     document.getElementById('sBlocked').textContent = stats.blocked;
     document.getElementById('sClean').textContent   = stats.clean;
-
-  } catch(e) {
+  	}
+  } 
+  catch(e) {
     removeTyping();
     addBotMessage('Error: Cannot connect to GuardLayer API. Make sure the server is running on port 8000.', 'clean', [], null);
   }
